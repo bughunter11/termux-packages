@@ -1,0 +1,25 @@
+name: Build ZYRO bootstrap
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+      - name: Build bootstrap aarch64
+        shell: bash
+        run: |
+          ./scripts/run-docker.sh ./clean.sh
+          ./scripts/run-docker.sh ./scripts/build-bootstraps.sh --architectures aarch64 2>&1 | tee build.log
+          ls -la bootstrap-*.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zyro-bootstrap
+          path: |
+            bootstrap-aarch64.zip
+            build.log
