@@ -20,7 +20,7 @@ jobs:
         run: |
           ./scripts/run-docker.sh ./clean.sh
           ./scripts/run-docker.sh ./scripts/build-bootstraps.sh --architectures aarch64 2>&1 | tee build.log
-          ls -la bootstrap-*.zip
+          ls -la output/bootstrap-*.zip; cp -f output/bootstrap-aarch64.zip .
       - name: Rescue zip from container
         if: always()
         continue-on-error: true

@@ -1,0 +1,40 @@
+name: Build ZYRO bootstrap
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+      - name: Make workspace writable
+        run: |
+          sudo chmod -R a+rwX "$GITHUB_WORKSPACE"
+          id
+          ls -ld "$GITHUB_WORKSPACE"
+      - name: Build bootstrap aarch64
+        shell: bash
+        run: |
+          ./scripts/run-docker.sh ./clean.sh
+          ./scripts/run-docker.sh ./scripts/build-bootstraps.sh --architectures aarch64 2>&1 | tee build.log
+          ls -la bootstrap-*.zip
+      - name: Rescue zip from container
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ ! -f bootstrap-aarch64.zip ]; then
+            P=$(docker exec termux-package-builder find / -name 'bootstrap-aarch64.zip' -not -path '/proc/*' 2>/dev/null | head -1)
+            echo "container zip: $P"
+            if [ -n "$P" ]; then docker cp "termux-package-builder:$P" ./bootstrap-aarch64.zip; fi
+          fi
+          ls -la bootstrap-aarch64.zip || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zyro-bootstrap
+          path: |
+            bootstrap-aarch64.zip
+            build.log
