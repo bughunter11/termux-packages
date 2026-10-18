@@ -1,20 +1,62 @@
+# bughunter11/termux-packages -> .github/workflows/zyro-bootstrap.yml  (purani file ko isse REPLACE karo)
+# Aapka chalta hua workflow + 4 cheezein: extra packages (git vim ...), path safety-net, audit, release upload.
+# Prefix (com.zyronix.zyrostudio) fork ki scripts/properties.sh me pehle se set hai, yahan badalna nahi padta.
 name: Build ZYRO bootstrap
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      extra_packages:
+        description: "Bootstrap me jodne wale packages (space separated)"
+        default: "git vim openssh make nano python python-pip"
+      release_tag:
+        description: "Is naam ke GitHub Release me zip upload karo (khali = sirf artifact)"
+        default: "bootstrap-tools-v1"
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      EXTRA: ${{ inputs.extra_packages }}
+      APP_PKG: com.zyronix.zyrostudio
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
           df -h /
       - name: Make workspace writable
         run: |
           sudo chmod -R a+rwX "$GITHUB_WORKSPACE"
           id
           ls -ld "$GITHUB_WORKSPACE"
+      - name: Check app package name
+        run: |
+          grep -n 'TERMUX_APP__PACKAGE_NAME=' scripts/properties.sh
+          grep -q 'TERMUX_APP__PACKAGE_NAME="com.zyronix.zyrostudio"' scripts/properties.sh || { echo "ERROR: properties.sh me package name com.zyronix.zyrostudio nahi hai"; exit 1; }
+      - name: Add extra packages to bootstrap list
+        run: |
+          cat > addpkgs.py <<'PY'
+          import os
+          p = 'scripts/build-bootstraps.sh'
+          s = open(p).read()
+          anchor = 'PACKAGES+=("libbz2")'
+          if s.count(anchor) != 1:
+              raise SystemExit('ERROR: anchor %s build-bootstraps.sh me %d baar mila (1 chahiye)' % (anchor, s.count(anchor)))
+          add = ''
+          for x in os.environ['EXTRA'].split():
+              line = 'PACKAGES+=("%s")' % x
+              if line not in s:
+                  add += '\n\t\t' + line
+          s = s.replace(anchor, anchor + add)
+          open(p, 'w').write(s)
+          print('added:', add.replace('\n\t\t', ' ') or '(kuch nahi, sab pehle se the)')
+          PY
+          python3 addpkgs.py
+          grep -n 'PACKAGES+=' scripts/build-bootstraps.sh | head -60
       - name: Build bootstrap aarch64
         shell: bash
         run: |
@@ -31,6 +73,37 @@ jobs:
             if [ -n "$P" ]; then docker cp "termux-package-builder:$P" ./bootstrap-aarch64.zip; fi
           fi
           ls -la bootstrap-aarch64.zip || true
+      - name: Safety net - text files me bacha com.termux path theek karo
+        run: |
+          cat > fixpaths.py <<'PY'
+          import os, re, shutil, zipfile
+          src = 'bootstrap-aarch64.zip'
+          pkg = os.environ['APP_PKG']
+          pat = re.compile(rb'/data/data/com\.termux(?![A-Za-z0-9_]|\.[A-Za-z])')
+          new = ('/data/data/' + pkg).encode()
+          tmp = src + '.fixed'
+          n = 0
+          with zipfile.ZipFile(src) as zi, zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zo:
+              for info in zi.infolist():
+                  data = zi.read(info.filename)
+                  if not info.is_dir() and b'\0' not in data[:8192] and pat.search(data):
+                      data = pat.sub(new, data)
+                      n += 1
+                  zo.writestr(info, data)
+          shutil.move(tmp, src)
+          print('rewrote', n, 'text files in', src)
+          PY
+          python3 fixpaths.py
+      - name: Audit
+        run: |
+          ls -la bootstrap-aarch64.zip
+          rm -rf chk && mkdir chk && cd chk && unzip -q ../bootstrap-aarch64.zip
+          echo "bin/pkg me naya prefix: $(grep -c "$APP_PKG" bin/pkg || true)"
+          if grep -q "data/com.termux" bin/pkg 2>/dev/null; then echo "::warning::bin/pkg me abhi bhi com.termux path hai"; fi
+          for t in git vim ssh make nano python3 pip; do
+            if [ -e "bin/$t" ] || [ -L "bin/$t" ]; then echo "OK   bin/$t"; else echo "::warning::bin/$t nahi mila"; fi
+          done
+          echo "ab bhi com.termux wali files (binary milake):"; grep -rl "/data/data/com.termux" . | head -20 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -38,3 +111,13 @@ jobs:
           path: |
             bootstrap-aarch64.zip
             build.log
+      - name: Publish to GitHub Release
+        if: success() && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "ZYRO bootstrap ($APP_PKG) + $EXTRA"
+          gh release upload "$TAG" bootstrap-aarch64.zip --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Download: https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/bootstrap-aarch64.zip"
